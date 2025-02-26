@@ -1,13 +1,12 @@
 // server/index.js
 const express = require('express');
 const cors = require('cors');
-// Ethers v6 import
-const { ethers } = require('ethers');
+const { ethers } = require('ethers'); // Ethers v6 style
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable CORS and JSON parsing
+// Enable CORS + JSON parsing
 app.use(cors());
 app.use(express.json());
 
@@ -16,7 +15,6 @@ app.use(express.json());
 ------------------------------------------------------------------ */
 app.get('/api/gcc/price', async (req, res) => {
   try {
-    // Dynamically import node-fetch in CommonJS
     const fetch = (await import('node-fetch')).default;
 
     // DexScreener
@@ -28,11 +26,11 @@ app.get('/api/gcc/price', async (req, res) => {
     const BSCSCAN_API_KEY = 'HVYMP4JE3IHP4RMF5EYZD2RCSDBZHS4CQD';
     const bscScanUrl = `https://api.bscscan.com/api?module=stats&action=tokenprice&contractaddress=${GCC_CONTRACT}&apikey=${BSCSCAN_API_KEY}`;
 
-    // Fetch DexScreener data
+    // Fetch DexScreener
     const dexResponse = await fetch(dexScreenerUrl);
     const dexData = await dexResponse.json();
 
-    // Fetch BscScan data
+    // Fetch BscScan
     const bscResponse = await fetch(bscScanUrl);
     const bscData = await bscResponse.json();
 
@@ -64,14 +62,12 @@ app.get('/api/gcc/price', async (req, res) => {
 
 /* ------------------------------------------------------------------
    2) GCC Volume Endpoint (Data from Flask)
-   This calls your Flask app at https://gcc24hrvolume.onrender.com/api/gcc_volume
-   which returns a JSON of advanced data (24h volume, rewards, etc.)
 ------------------------------------------------------------------ */
 app.get('/api/gcc/volume', async (req, res) => {
   try {
     const fetch = (await import('node-fetch')).default;
 
-    // The Flask endpoint that returns JSON
+    // Flask endpoint returning JSON
     const flaskUrl = 'https://gcc24hrvolume.onrender.com/api/gcc_volume';
     const flaskResponse = await fetch(flaskUrl);
 
@@ -95,27 +91,48 @@ app.get('/api/gcc/volume', async (req, res) => {
 });
 
 /* ------------------------------------------------------------------
-   3) GCC Balance Endpoint (Ethers v6 for BSC)
-   Returns the user's GCC token balance, calling balanceOf(...) on-chain
+   3) GCC Balance + USD & AUD Endpoint (Ethers v6 for BSC)
 ------------------------------------------------------------------ */
 app.get('/api/gcc/balance/:walletAddress', async (req, res) => {
   const { walletAddress } = req.params;
   try {
-    // Ethers v6 style: new ethers.JsonRpcProvider(...)
+    const fetch = (await import('node-fetch')).default;
+
+    // 1) On-chain GCC Balance
     const provider = new ethers.JsonRpcProvider('https://bsc-dataseed.binance.org/');
-
-    // GCC token contract
-    const contractAddress = '0x092aC429b9c3450c9909433eB0662c3b7c13cF9A';
+    const contractAddress = '0x092aC429b9c3450c9909433eB0662c3b7c13cF9A'; // GCC token contract
     const abi = ['function balanceOf(address) view returns (uint256)'];
-
-    // Create contract + fetch balance
     const contract = new ethers.Contract(contractAddress, abi, provider);
+
     const balanceBN = await contract.balanceOf(walletAddress);
+    const balanceTokens = parseFloat(ethers.formatUnits(balanceBN, 18));
 
-    // Convert from wei to decimals (Ethers v6 uses ethers.formatUnits)
-    const balanceReadable = ethers.formatUnits(balanceBN, 18);
+    // 2) Fetch GCC price in USD from DexScreener
+    const DEXSCREENER_PAIR = '0x3d32d359bdad07C587a52F8811027675E4f5A833';
+    const dexResponse = await fetch(`https://api.dexscreener.com/latest/dex/pairs/bsc/${DEXSCREENER_PAIR}`);
+    const dexData = await dexResponse.json();
+    const priceUsd = parseFloat(dexData?.pairs?.[0]?.priceUsd || 0);
 
-    return res.json({ success: true, balance: balanceReadable });
+    // total value in USD
+    const totalUsdValue = balanceTokens * priceUsd;
+
+    // 3) Get USD->AUD exchange rate (exchangerate.host)
+    const fxResponse = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=AUD');
+    const fxData = await fxResponse.json();
+    const usdToAud = parseFloat(fxData?.rates?.AUD || 1.5);
+
+    // total value in AUD
+    const totalAudValue = totalUsdValue * usdToAud;
+
+    return res.json({
+      success: true,
+      walletAddress,
+      balanceTokens,   // e.g. 1000
+      priceUsd,        // e.g. 0.02
+      totalUsdValue,   // e.g. 20
+      totalAudValue,   // e.g. 30
+      usdToAud,        // e.g. 1.5
+    });
   } catch (error) {
     console.error('Error fetching balance:', error);
     return res.status(500).json({
